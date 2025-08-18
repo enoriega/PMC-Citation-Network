@@ -78,7 +78,7 @@ app = typer.Typer()
 @app.command()
 def main(input_dir: Path, output_file: Path = Path("out.jsonl")):
     with output_file.open("w") as f:
-        for file in tqdm(input_dir.glob("*xml"), desc=f"Parsing XMLs in {input_dir.name} for metadata"):
+        for file in tqdm(filter(lambda f: f.name.endswith("xml"), input_dir.iterdir()), desc=f"Parsing XMLs in {input_dir.name} for metadata"):
             try:
                 line = parse_xml(file)
                 f.write(line + "\n")
