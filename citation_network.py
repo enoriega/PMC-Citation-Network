@@ -1,18 +1,18 @@
+import os
 import json
 import typer
 from tqdm import tqdm
-from models import *
-from sqlmodel import SQLModel, create_engine
-from sqlalchemy import Engine
-from sqlalchemy.orm import Session
-import os
+from sqlmodel import SQLModel, create_engine, Session, select, func, desc
+from sqlalchemy.orm import Session as SASession
 from datetime import datetime
+from pathlib import Path
+from models import *
 
 app = typer.Typer()
 
 def _bulk_insert(engine, *objects):
 	""" Bulk inserts the collections into the database """
-	with Session(engine) as session:
+	with SASession(engine) as session:
 		for os in objects:
 			session.bulk_save_objects(os)
 			
@@ -176,8 +176,44 @@ def populate_database(
 		# Insert any leftovers
 		if articles or references:
 			_bulk_insert(engine, articles, references)
-			
 
+@app.command()	
+def print_article_citations(
+		connection_string:str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
+		pmcids_file:Path|None = typer.Argument(None, help="File containing list of PMCIDs to query, one per file"),
+		echo: bool = typer.Option(False, help="Print SQL commands"),
+	):
+	"""
+	Gets the citations to and from papers. Will retrieve only those in pmcids_file, if specified, otherwise, it returns the citations for all the articles.
+	"""
+	engine = create_engine(connection_string, echo=echo)
+
+	stmt = (
+		select(
+			Article.article_identifier,
+			func.count(Reference.cites_id).label("num_citations")
+		)
+		.join(Reference, Article.id == Reference.cites_id)
+	)
+
+	# Read the PMCIDs from the file
+	if pmcids_file:
+		with pmcids_file.open() as f:
+			ids = {l.strip() for l in f}
+		# Select only the articles in the input set
+		stmt = stmt.where(Article.article_identifier.in_(ids))
+	
+	# Aggregate the 
+	stmt = stmt.group_by(Article.article_identifier).order_by(desc("num_citations"))
+	
+	with Session(engine) as session:
+		result = session.exec(stmt)
+		sample_ids = result.all()
+		output = [
+			{"article_identifier": article_id, "num_citations": num_citations}
+			for article_id, num_citations in sample_ids
+		]
+	print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":
