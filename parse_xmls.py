@@ -1,4 +1,5 @@
 """ Reads a directory with xml files and generates the citation files needed for the citation network """
+
 from lxml import etree
 from pathlib import Path
 import typer, json
