@@ -10,7 +10,7 @@ from datetime import datetime
 
 app = typer.Typer()
 
-def bulk_insert(engine, *objects):
+def _bulk_insert(engine, *objects):
 	""" Bulk inserts the collections into the database """
 	with Session(engine) as session:
 		for os in objects:
@@ -19,25 +19,44 @@ def bulk_insert(engine, *objects):
 		session.commit()
 
 @app.command()
-def create_schema(file_name:str = "network.db", echo:bool=False) -> Engine:
-	""" Creates a SQLite database with the schema """
+def create_schema(
+	connection_string:str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
+	echo:bool = typer.Option(False, help="Print SQL commands")
+	) -> None:
+	""" 
+	Creates a database database with the schema
+	"""
 	
-	sqlite_url = f"sqlite:///{file_name}"
-	engine = create_engine(sqlite_url, echo=echo)
+	engine = create_engine(connection_string, echo=echo)
 	SQLModel.metadata.create_all(engine)
 
-	return engine
 
 @app.command()
-def populate_database(database_file:str = "network.db", data_file:str = "xml.jsonl", echo:bool=False, batch_size:int=5000000):
-	""" Creates the database with contents from data_file """
+def populate_database(
+    connection_string: str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
+    data_file: str = typer.Argument(help="Path to the input data file"),
+	batch_size:int= typer.Argument(500_000, help="Commit changes after processing `batch_size` records"), 
+    echo: bool = typer.Option(False, help="Print SQL commands"),
+    overwrite_file:bool= typer.Option(False, help="Overwrites existing SQLite file if true, otherwise, program fails")
+) -> None:
+	""" 
+	Creates the database and populates it with contents from data_file. 
+	This command uses bulk operations and its meant to create an initial database.
+	For incremental additions use the `add_data` command
+	"""
 
 	# Erase the database file if exists
-	if os.path.exists(database_file):
-		os.remove(database_file)
+	if connection_string.startswith("sqlite:///"):
+		db_path = connection_string[10:] # Remove the prefix
+		if os.path.exists(db_path):
+			if overwrite_file:
+				os.remove(db_path)
+			else:
+				raise RuntimeError(f"DB file: {db_path} - already exists")
 
 	# First create the schema
-	engine = create_schema(database_file, echo)
+	create_schema(connection_string, echo)
+	engine = create_engine(connection_string, echo=echo)
 
 	# Then, read the data and bulk add it
 	with open(data_file) as f:
@@ -88,12 +107,12 @@ def populate_database(database_file:str = "network.db", data_file:str = "xml.jso
 					articles_ids[data[f"article_{id_type}"]] = ix
 
 			if ix + 1 == batch_size:
-				bulk_insert(engine, journals, identifiers)
+				_bulk_insert(engine, journals, identifiers)
 				journals, identifiers = [], []
 
 		# Insert any leftovers
 		if journals or identifiers:
-			bulk_insert(engine, journals, identifiers)
+			_bulk_insert(engine, journals, identifiers)
 
 	# Go back to the begining of the file
 	with open(data_file) as f:
@@ -109,10 +128,17 @@ def populate_database(database_file:str = "network.db", data_file:str = "xml.jso
 				except ValueError:
 					pub_date = None
 
+			jname = data["journal_name"]
 			if data['journal_issn'] is not None and len(data['journal_issn'].strip()) > 0:
-				key = data["journal_issn"]
+				issn = data['journal_issn']
+			else:
+				issn = None
+
+			if issn:
+				key = issn
 			else:
 				key = jname
+
 			journal_id = journals_ids[key]
 
 			articles.append(
@@ -144,12 +170,12 @@ def populate_database(database_file:str = "network.db", data_file:str = "xml.jso
 						seen.add((source, dest))
 
 			if ix + 1 == batch_size:
-				bulk_insert(engine, articles, references)
+				_bulk_insert(engine, articles, references)
 				articles, references = [], []
 
 		# Insert any leftovers
 		if articles or references:
-			bulk_insert(engine, articles, references)
+			_bulk_insert(engine, articles, references)
 			
 
 
