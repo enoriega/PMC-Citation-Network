@@ -1,14 +1,17 @@
-from sqlmodel import Field, SQLModel, Relationship
+from sqlmodel import Field, Index, SQLModel, Relationship
 from datetime import date
 
 class Journal(SQLModel, table=True):
-	id: int | None = Field(default=None, primary_key=True)
-	name:str 
+	id: str | None = Field(default=None, primary_key=True)
+	name:str = Field(index=True)
 	issn:str | None = Field(default=None, index=True)
+
+	articles: list['Article'] = Relationship(back_populates="journal")
 
 class Reference(SQLModel, table=True):
 	cites_id: int = Field(foreign_key="article.article_identifier", primary_key=True) # Article being cited
 	citying_id: int = Field(foreign_key="article.article_identifier", primary_key=True) # Article citying 
+
 
 class Article(SQLModel, table=True):
 	id: int | None = Field(default=None, primary_key=True)
@@ -21,6 +24,8 @@ class Article(SQLModel, table=True):
 	journal_id: int | None = Field(default=None, foreign_key="journal.id", index=True)
 	pub_date: date | None = Field(default=None, index=True)
 	publisher_id: str | None = Field(default=None)
+
+	journal: Journal = Relationship(back_populates="articles")
 
 	# Articles THIS article references (outgoing edges)
 	references: list["Article"] = Relationship(
@@ -50,8 +55,12 @@ class Article(SQLModel, table=True):
 # We use this to map between multiple identifiers
 class Identifier(SQLModel, table=True):
 	id: int | None = Field(default=None, primary_key=True)
-	key_type: str
+	key_type: str 
 	key: str
 	value: str
+
+	__table_args__ = (
+        Index("ix_identifier_key_type_key", "key_type", "key"),
+    )
 
 

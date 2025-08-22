@@ -3,7 +3,6 @@ import json
 import typer
 from tqdm import tqdm
 from sqlmodel import SQLModel, create_engine, Session, select, func, desc
-from sqlalchemy.orm import Session as SASession
 from datetime import datetime
 from pathlib import Path
 from models import *
@@ -12,11 +11,27 @@ app = typer.Typer()
 
 def _bulk_insert(engine, *objects):
 	""" Bulk inserts the collections into the database """
-	with SASession(engine) as session:
+	with Session(engine) as session:
 		for os in objects:
 			session.bulk_save_objects(os)
 			
 		session.commit()
+
+def _get_journal_data(data):
+	""" Convenience function to get the journal's data. Key is used to test for prior existence """
+	
+	jname = data["journal_name"]
+	if data['journal_issn'] is not None and len(data['journal_issn'].strip()) > 0:
+		issn = data['journal_issn']
+	else:
+		issn = None
+
+	if issn:
+		key = issn
+	else:
+		key = jname
+	return jname,issn,key
+
 
 @app.command()
 def create_schema(
@@ -33,11 +48,11 @@ def create_schema(
 
 @app.command()
 def populate_database(
-    connection_string: str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
-    data_file: str = typer.Argument(help="Path to the input data file"),
+	connection_string: str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
+	data_file: str = typer.Argument(help="Path to the input data file"),
 	batch_size:int= typer.Argument(500_000, help="Commit changes after processing `batch_size` records"), 
-    echo: bool = typer.Option(False, help="Print SQL commands"),
-    overwrite_file:bool= typer.Option(False, help="Overwrites existing SQLite file if true, otherwise, program fails")
+	echo: bool = typer.Option(False, help="Print SQL commands"),
+	overwrite_file:bool= typer.Option(False, help="Overwrites existing SQLite file if true, otherwise, program fails")
 ) -> None:
 	""" 
 	Creates the database and populates it with contents from data_file. 
@@ -63,35 +78,26 @@ def populate_database(
 		# First create the journals and identifier objects
 		journals, identifiers = [], []
 		articles_ids = {}
-		journals_ids = {}
+		# journals_ids = {}
 		seen = set()
 		id_types = ["pmc", "pmid", "doi", "pii"]
 		identifier_ix = 0
 
 		for ix, line in tqdm(enumerate(f), desc="Resolving journals and article identifies", unit="files"):
 			data = json.loads(line)
-			jname = data["journal_name"]
-			if data['journal_issn'] is not None and len(data['journal_issn'].strip()) > 0:
-				issn = data['journal_issn']
-			else:
-				issn = None
-
-			if issn:
-				key = issn
-			else:
-				key = jname
+			jname, issn, key = _get_journal_data(data)
 				
 			if key not in seen:
 				journals.append(
 					Journal(
-						id=ix,
+						id=key,
 						name=jname,
 						issn=issn
 					)
 				)
 				seen.add(key)
 				
-				journals_ids[key] = ix
+				# journals_ids[key] = ix
 
 			for id_type in id_types:
 				if f"article_{id_type}" in data:
@@ -128,18 +134,7 @@ def populate_database(
 				except ValueError:
 					pub_date = None
 
-			jname = data["journal_name"]
-			if data['journal_issn'] is not None and len(data['journal_issn'].strip()) > 0:
-				issn = data['journal_issn']
-			else:
-				issn = None
-
-			if issn:
-				key = issn
-			else:
-				key = jname
-
-			journal_id = journals_ids[key]
+			jname, issn, journal_id = _get_journal_data(data)
 
 			articles.append(
 				Article(
@@ -176,6 +171,112 @@ def populate_database(
 		# Insert any leftovers
 		if articles or references:
 			_bulk_insert(engine, articles, references)
+
+@app.command()
+def add_data(
+	connection_string: str = typer.Argument(help="Database connection string, e.g. sqlite:///mydb.db"),
+	data_file: str = typer.Argument(help="Path to the input data file"),
+	echo: bool = typer.Option(False, help="Print SQL commands"),
+) -> None:
+	""" 
+	Updates a databse file with contents from data_file. 
+	For bulk additions use the `populate_database` command
+	"""
+
+
+	# First create the schema
+	create_schema(connection_string, echo)
+	engine = create_engine(connection_string, echo=echo)
+
+	# Then, read the data and bulk add it
+	with open(data_file) as f:
+		# First create the journals and identifier objects
+		identifiers = []
+		id_types = ["pmc", "pmid", "doi", "pii"]
+
+
+	with open(data_file) as f:
+		# Now do the same with the articles and references
+		articles_w_references = []
+
+		for line in tqdm(f, desc="Adding articles, journals and citations", unit="files"):
+			data = json.loads(line)				
+
+			# Deal with the identifiers
+			for id_type in id_types:
+				if f"article_{id_type}" in data:
+					identifiers.append(
+						Identifier(
+							key_type=id_type,
+							key=data[f"article_{id_type}"],
+							value=data["article_id"]
+						)
+					)
+
+			# Get journal from the current record
+			jname, issn, key = _get_journal_data(data)
+				
+			journal = Journal(
+				id=key,
+				name=jname,
+				issn=issn
+			)
+
+			pub_date_str = data.get("pub_date")
+			pub_date = None
+			if pub_date_str:
+				try:
+					pub_date = datetime.strptime(pub_date_str, "%m/%d/%Y").date()
+				except ValueError:
+					pub_date = None
+
+
+			refs = data.get("references", [])
+			
+			articles_w_references.append(
+				(
+					Article(
+						article_identifier=data["article_id"],
+						pmcid=data.get("article_pmc"),
+						pmid=data.get("article_pmid"),
+						doi=data.get("article_doi"),
+						pii=data.get("article_pii"),
+						journal=journal,
+						publisher_id=data.get("article_publisher-id"),
+						pub_date=pub_date
+					),
+					refs		
+				)
+			)
+
+
+	
+	# Save the articles
+	with Session(engine) as session:
+		tracked = {}
+		with session.no_autoflush:
+			session.add_all(identifiers)
+			for article, refs in tqdm(articles_w_references, desc="Cross-referencing files"):
+				# Make sure to track the journal instance or create it if its new
+				journal = article.journal
+				if journal.id in tracked:
+					article.journal = tracked[journal.id]
+				elif j := session.get(Journal, journal.id):
+					article.journal = j
+				else:
+					session.add(journal)
+					tracked[journal.id] = journal
+				# Create the new article instance in the DB
+				session.add(article)
+				# Create the references
+				for ref in refs:
+					stmt = select(Identifier.value).where(Identifier.key_type == ref['id_type'], Identifier.key == ref['id'])
+					if article_id := session.exec(stmt).first():
+						dest = session.exec(select(Article).where(Article.article_identifier == article_id)).first()
+						article.references.append(dest)
+		session.commit()
+
+
 
 @app.command()	
 def print_article_citations(
