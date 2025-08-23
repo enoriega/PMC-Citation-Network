@@ -17,6 +17,5 @@ WORKDIR /app
 RUN uv sync --locked
 
 # Run the
-# CMD ["uv", "run", "main.py", "/input", "--output-file", "/output/$OUT_FILE"]
 CMD ["/bin/sh", "/app/process_directories.sh"]
 
